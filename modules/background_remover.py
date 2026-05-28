@@ -1,91 +1,76 @@
 """
-Module de suppression de fond — version améliorée.
+Module de suppression de fond.
 
-Modèles disponibles (par ordre de qualité décroissante) :
-  - birefnet-general       : BiRefNet — état de l'art, meilleure qualité générale ★★★★★
-  - birefnet-general-lite  : BiRefNet léger — bonne qualité, plus rapide ★★★★☆
-  - isnet-general-use      : IS-Net — bon équilibre qualité/vitesse ★★★☆☆
-  - silueta                : Bon pour les objets nets ★★★☆☆
-  - u2net                  : Modèle original — rapide mais moins précis ★★☆☆☆
+Modeles disponibles (taille ONNX / compatibilite Streamlit Cloud) :
+  - isnet-general-use  : IS-Net ~177 MB  — defaut Cloud (bon equilibre)
+  - silueta            : Silueta ~44 MB  — le plus leger
+  - u2net              : U2Net  ~176 MB  — modele original
+  - birefnet-general-lite : BiRefNet ~370 MB  — qualite superieure
+  - birefnet-general   : BiRefNet ~973 MB  — HORS QUOTA Cloud (1 GB RAM)
 
-Référence : https://github.com/danielgatis/rembg
-Modèle BiRefNet : https://huggingface.co/ZhengPeng7/BiRefNet
+Streamlit Cloud (tier gratuit) = 1 GB RAM.
+BiRefNet-general depasse cette limite → crash.
+Le defaut est donc isnet-general-use (bonne qualite, ~177 MB).
 """
 
+import streamlit as st
 from PIL import Image, ImageFilter
-from rembg import new_session, remove
 from typing import Optional
 
-# Cache des sessions pour ne pas recharger le modèle à chaque appel
-_session_cache: dict = {}
 
-
-def get_session(model_name: str):
-    """Retourne (et met en cache) une session rembg pour le modèle donné."""
-    if model_name not in _session_cache:
-        _session_cache[model_name] = new_session(model_name)
-    return _session_cache[model_name]
+@st.cache_resource(show_spinner="Chargement du modele de detourage...")
+def _load_session(model_name: str):
+    """
+    Charge et met en cache la session rembg via st.cache_resource.
+    Le modele n'est telecharge qu'une seule fois par session serveur.
+    """
+    from rembg import new_session
+    return new_session(model_name)
 
 
 def remove_background(
     image: Image.Image,
-    model: str = "birefnet-general",
+    model: str = "isnet-general-use",
     alpha_matting: bool = False,
     alpha_matting_fg_threshold: int = 240,
     alpha_matting_bg_threshold: int = 10,
     smooth_edges: bool = True,
     smooth_radius: int = 1,
-    max_size: int = 1024,
+    max_size: int = 800,
 ) -> Image.Image:
     """
-    Supprime le fond d'une image avec rembg (BiRefNet par défaut).
-
-    Améliorations v2 :
-    - BiRefNet comme modèle par défaut (bien plus précis que U2Net)
-    - Cache de session (pas de rechargement entre deux appels)
-    - Alpha matting optionnel pour les bords très fins (cheveux, fourrure)
-    - Lissage des bords du masque pour une intégration naturelle
-    - Redimensionnement intelligent avant traitement
+    Supprime le fond d'une image avec rembg.
 
     Args:
-        image                       : Image PIL d'entrée (RGB ou RGBA).
-        model                       : Identifiant du modèle rembg à utiliser.
-        alpha_matting               : Active le raffinement de bords fins.
-        alpha_matting_fg_threshold  : Seuil premier plan pour l'alpha matting.
-        alpha_matting_bg_threshold  : Seuil arrière plan pour l'alpha matting.
-        smooth_edges                : Applique un léger flou gaussien sur l'alpha.
-        smooth_radius               : Rayon du flou (1–3 recommandé).
-        max_size                    : Taille max avant redimensionnement.
+        image        : Image PIL RGB en entree.
+        model        : Modele rembg (voir AVAILABLE_MODELS).
+        alpha_matting: Raffiner les bords fins (cheveux, poils).
+        smooth_edges : Flou gaussien sur le canal alpha.
+        smooth_radius: Rayon du flou (0-3).
+        max_size     : Taille max avant traitement (limite RAM Cloud).
 
     Returns:
-        Image.Image: Image RGBA avec fond transparent.
+        Image RGBA avec fond transparent.
     """
-    # Normaliser le mode d'entrée
-    if image.mode not in ("RGB", "RGBA"):
-        image = image.convert("RGB")
-    elif image.mode == "RGBA":
+    if image.mode not in ("RGB",):
         image = image.convert("RGB")
 
-    # ----------------------------------------------------------------
-    # Redimensionnement adaptatif
-    # Le modèle est plus précis sur des images de taille raisonnable.
-    # On réduit si nécessaire, puis on remet à l'échelle originale.
-    # ----------------------------------------------------------------
+    # Redimensionnement pour limiter la RAM utilisee
     original_size = image.size
     if max(image.size) > max_size:
         ratio = max_size / max(image.size)
-        resized_size = (int(image.width * ratio), int(image.height * ratio))
-        image_proc = image.resize(resized_size, Image.LANCZOS)
+        image_proc = image.resize(
+            (int(image.width * ratio), int(image.height * ratio)),
+            Image.LANCZOS,
+        )
     else:
         image_proc = image
 
-    # ----------------------------------------------------------------
-    # Suppression du fond avec le modèle sélectionné
-    # ----------------------------------------------------------------
-    session = get_session(model)
+    # Charger le modele (mis en cache par Streamlit)
+    session = _load_session(model)
 
+    from rembg import remove
     if alpha_matting:
-        # Alpha matting : raffinement des contours fins (cheveux, poils…)
         result = remove(
             image_proc,
             session=session,
@@ -97,31 +82,27 @@ def remove_background(
     else:
         result = remove(image_proc, session=session)
 
-    # ----------------------------------------------------------------
-    # Remise à la taille originale (si on avait redimensionné)
-    # ----------------------------------------------------------------
+    # Remettre a la taille originale
     if result.size != original_size:
         result = result.resize(original_size, Image.LANCZOS)
 
     result = result.convert("RGBA")
 
-    # ----------------------------------------------------------------
-    # Lissage du canal alpha pour des bords naturels
-    # Un léger flou gaussien évite les contours crénelés
-    # ----------------------------------------------------------------
+    # Lisser les bords du masque alpha
     if smooth_edges and smooth_radius > 0:
         r, g, b, a = result.split()
-        a_smooth = a.filter(ImageFilter.GaussianBlur(radius=smooth_radius))
-        result = Image.merge("RGBA", (r, g, b, a_smooth))
+        a = a.filter(ImageFilter.GaussianBlur(radius=smooth_radius))
+        result = Image.merge("RGBA", (r, g, b, a))
 
     return result
 
 
-# Mapping nom affiché → identifiant modèle rembg
+# Modeles disponibles — du plus leger au plus lourd
+# (ordre important : defaut = index 0 = isnet-general-use)
 AVAILABLE_MODELS = {
-    "BiRefNet General (meilleur)": "birefnet-general",
-    "BiRefNet Lite (rapide)": "birefnet-general-lite",
-    "IS-Net General": "isnet-general-use",
-    "Silueta": "silueta",
-    "U2Net (original)": "u2net",
+    "IS-Net General (recommande Cloud)": "isnet-general-use",
+    "Silueta (le plus leger)":           "silueta",
+    "U2Net (original)":                  "u2net",
+    "BiRefNet Lite (meilleure qualite)": "birefnet-general-lite",
+    "BiRefNet General (hors quota Cloud)": "birefnet-general",
 }

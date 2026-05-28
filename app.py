@@ -16,11 +16,25 @@ import io
 import os
 
 import streamlit as st
-from dotenv import load_dotenv
 from PIL import Image
 
-# Charger les variables d'environnement depuis .env (si présent)
-load_dotenv()
+# Charger le .env en local (ignoré sur Streamlit Cloud)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+def _get_hf_token_default() -> str:
+    """
+    Lit le token HuggingFace depuis :
+      1. st.secrets["HF_TOKEN"]  → Streamlit Community Cloud
+      2. os.getenv("HF_TOKEN")   → .env local
+    """
+    try:
+        return st.secrets.get("HF_TOKEN", os.getenv("HF_TOKEN", ""))
+    except Exception:
+        return os.getenv("HF_TOKEN", "")
 
 # Importer les modules métier
 from modules.background_remover import remove_background, AVAILABLE_MODELS
@@ -107,17 +121,20 @@ with st.sidebar:
     st.subheader("🎭 Suppression de fond")
 
     rembg_model_label = st.selectbox(
-        "Modèle de détourage",
+        "Modele de detourage",
         options=list(AVAILABLE_MODELS.keys()),
         index=0,
         help=(
-            "**BiRefNet General** : Meilleur choix pour tout type de scène.\n\n"
-            "**BiRefNet Lite** : Plus rapide, qualité proche.\n\n"
-            "**IS-Net / Silueta** : Alternatives compactes.\n\n"
-            "**U2Net** : Modèle original, moins précis."
+            "**IS-Net** : recommande sur Cloud (~177 MB).\n\n"
+            "**Silueta** : le plus leger (~44 MB).\n\n"
+            "**BiRefNet Lite** : meilleure qualite (~370 MB).\n\n"
+            "**BiRefNet General** : hors quota Cloud (973 MB)."
         ),
     )
     rembg_model = AVAILABLE_MODELS[rembg_model_label]
+
+    if "birefnet-general" == rembg_model:
+        st.warning("BiRefNet General (973 MB) peut depasser la RAM du Cloud. Preferez IS-Net.")
 
     alpha_matting = st.checkbox(
         "Alpha matting (bords fins)",
@@ -167,7 +184,7 @@ with st.sidebar:
     if generation_mode == "🤗 HuggingFace API":
         hf_token = st.text_input(
             "Token HuggingFace",
-            value=os.getenv("HF_TOKEN", ""),
+            value=_get_hf_token_default(),
             type="password",
             help="Obtenez un token gratuit sur huggingface.co/settings/tokens",
         )

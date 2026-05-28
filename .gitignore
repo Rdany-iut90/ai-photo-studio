@@ -1,0 +1,30 @@
+# Secrets
+.env
+
+# Caches
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Outputs
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.webp
+!examples/*.png
+!examples/*.jpg
+!docs/*.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# HF cache
+.cache_huggingface/
+
+# Streamlit
+.streamlit/secrets.toml
